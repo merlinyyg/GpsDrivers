@@ -43,6 +43,7 @@
 #include "quectel.h"
 #include <string.h>
 #include <math.h>
+#include <vector>
 
 // #define SBF_CONFIG_TIMEOUT    500      // ms, timeout for waiting ACK
 #define QUECTEL_PACKET_TIMEOUT    2        // ms, if now data during this delay assume that full update received
@@ -55,6 +56,24 @@
 // /**** Warning macros, disable to save memory */
 #define QUECTEL_WARN(...)        {GPS_WARN(__VA_ARGS__);}
 #define QUECTEL_DEBUG(...)       {/*GPS_WARN(__VA_ARGS__);*/}
+
+
+void StringSplit(const std::string & str, const char split, std::vector<std::string> & res){
+	if(str == ""){
+		return;
+	}
+
+    std::string strs = str + split;
+	size_t pos = strs.find(split);
+
+	while(pos != strs.npos){
+        std::string temp = strs.substr(0, pos);
+		res.emplace_back(temp);
+
+		strs = strs.substr(pos + 1, strs.size());
+		pos = strs.find(split);
+	}
+}
 
 GPSDriverQUECTEL::GPSDriverQUECTEL(GPSCallbackPtr callback, void *callback_user,
 			   sensor_gps_s *gps_position,
@@ -176,12 +195,12 @@ GPSDriverQUECTEL::configure(unsigned &baudrate, const GPSConfig &config)
 bool
 GPSDriverQUECTEL::sendMessage(const char *msg)
 {
-	// SBF_DEBUG("Send MSG: %s", msg);
+	QUECTEL_DEBUG("Send MSG: %s", msg);
 
-	// // Send message
-	// int length = static_cast<int>(strlen(msg));
+	// Send message
+	int length = static_cast<int>(strlen(msg));
 
-	// return (write(msg, length) == length);
+	return (write(msg, length) == length);
 
 	return true;
 }
@@ -342,6 +361,41 @@ GPSDriverQUECTEL::parseChar(const uint8_t b)
 			if ((HEXDIGIT_CHAR(checksum >> 4) == *(_rx_buffer + _rx_buffer_bytes - 2)) &&
 			    (HEXDIGIT_CHAR(checksum & 0x0F) == *(_rx_buffer + _rx_buffer_bytes - 1))) {
 				iRet = _rx_buffer_bytes;
+
+				std::string nmea = std::string((const char *)(_rx_buffer + 1));
+				
+                std::vector<std::string> temp_vec;
+                StringSplit(nmea, '*', temp_vec);
+                std::vector<std::string> nmea_vec;
+                StringSplit(temp_vec[0], ',', nmea_vec);
+				
+                std::string type = nmea_vec[0];
+				if(type == "PQTMSVINSTATUS"){
+					int valid = stoi( nmea_vec[3]);
+                    // int obs = stoi(nmea_vec[6]);
+                    int dur = nmea_vec[7] == "" ? 0 : stoi(nmea_vec[7]);
+                    double meanX = nmea_vec[8] == "" ? 0 : stod(nmea_vec[8]);
+                    double meanY = nmea_vec[9] == "" ? 0 : stod(nmea_vec[9]);
+                    double meanZ = nmea_vec[10] == "" ? 0 : stod(nmea_vec[10]);
+                    double meanAcc = nmea_vec[11] == "" ? 0 : stod(nmea_vec[11]);
+
+
+					QUECTEL_DEBUG("Survey-in status: %ds cur accuracy: %fmm nr obs: %d valid: %d",
+                    dur, meanAcc / 1000, stoi(nmea_vec[6] == ""? 0 : nmea_vec[6]), valid);
+
+					SurveyInStatus status{};
+					double ecef_x = meanX ;
+					double ecef_y = meanY ;
+					double ecef_z = meanZ ;
+					ECEF2lla(ecef_x, ecef_y, ecef_z, status.latitude, status.longitude, status.altitude);
+					status.duration = dur;
+					status.mean_accuracy = meanAcc / 1000;
+					status.flags = uint8_t(valid);
+					surveyInStatus(status);
+				}
+
+				
+
 			}
 
 			decodeInit();
